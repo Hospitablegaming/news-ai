@@ -45,9 +45,8 @@ function analyseArticle($article, $conversationMessages = []) {
         }
     }
 
-    if ($newsContext && isBroadApprovalQuery($originalPrompt) && newsContextIsSubgroupSpecific($newsContext)) {
-        return generateSafeFallbackResponse($originalPrompt, null);
-    }
+    // Don't use fallback response - always try to get OpenAI's analysis
+    // The safeguards are now in OpenAI's system prompt instead
 
     if (!$isNewsRelated) {
         $newsRelevanceNote = "Note: This query does not appear strongly news-related, but the tool will still attempt to answer it using available news context and general knowledge.\n\n";
@@ -55,67 +54,40 @@ function analyseArticle($article, $conversationMessages = []) {
         $newsRelevanceNote = "Note: This query appears to be news-related, including economic/business topics.\n\n";
     }
 
-    $systemPrompt = "You are a news analyst AI that answers questions using provided news sources. Always use sources to synthesize answers. Respond with these exact sections:\n\n" .
-                    "Summary: Brief summary\n" .
-                    "Answer: Direct answer with [source: URL] citations inline\n" .
-                    "Analysis: Detailed explanation with [source: URL] citations\n" .
-                    "Bias Detection: Any bias in question or answer\n" .
-                    "Contradiction Detection: Inconsistencies between sources\n" .
-                    "Contradiction Score: Percentage\n" .
-                    "Claims Found: Specific claims with status\n" .
-                    "Reliability Score: Percentage\n\n" .
-                    "CRITICAL RULE: If news/web search results are provided in the context, you MUST synthesize them into an answer. Never refuse to answer when sources are available.";
+    $systemPrompt = "You are an expert news analyst. Your job is to analyze provided news articles and answer user questions using those sources.\n\n" .
+                    "CRITICAL INSTRUCTIONS:\n" .
+                    "1. You MUST synthesize the provided news articles to answer the question\n" .
+                    "2. If news sources are provided, use them to construct your answer\n" .
+                    "3. Cite specific sources with [source: URL] format inline in your text\n" .
+                    "4. Never refuse to answer when sources are provided\n" .
+                    "5. For incomplete information, note what sources don't cover\n\n" .
+                    "Format your response with these sections:\n" .
+                    "Summary: Brief 1-2 sentence summary\n" .
+                    "Answer: Direct answer using sources with citations\n" .
+                    "Analysis: Detailed explanation with source citations\n" .
+                    "Claims Found: List of URLs used\n" .
+                    "Bias Detection: Note any potential bias in sources or question\n" .
+                    "Contradiction Detection: Note any contradictions between sources\n" .
+                    "Reliability Score: Provide a reliability score (0-100%) based on source credibility and consistency\n\n" .
 
-    $userPrompt = "Current Question: " . $originalPrompt . "\n\n";
-    $userPrompt .= isset($newsRelevanceNote) ? $newsRelevanceNote : "";
+    $userPrompt = "Question: " . $originalPrompt . "\n\n";
+    
     if (!empty($newsContext)) {
-        $userPrompt .= "Recent news context (from NewsAPI search):\n" . $newsContext . "\n";
-    } elseif (!empty($webSearchContext) && stripos($webSearchContext, 'No relevant verified news sources were found for the query:') === false) {
-        $userPrompt .= "Recent news context (from NewsAPI search):\n" . $webSearchContext . "\n";
-    } else {
-        $userPrompt .= "Real-time news context is currently unavailable. Answer using the best available information and general knowledge when needed.\n\n";
+        $userPrompt .= "=== RECENT NEWS SOURCES (Last 2 weeks) ===\n" . $newsContext . "\n";
+    }
+    
+    if (!empty($webSearchContext) && stripos($webSearchContext, 'No relevant verified news sources were found for the query:') === false) {
+        $userPrompt .= "=== WEB SEARCH RESULTS ===\n" . $webSearchContext . "\n";
+    }
+    
+    if (empty($newsContext) && empty($webSearchContext)) {
+        $userPrompt .= "\nNote: No real-time news sources found. Please use your knowledge to provide the best answer possible.\n";
     }
 
-    if (!empty($conversationMessages)) {
-        $userPrompt .= "Conversation history:\n";
-        foreach ($conversationMessages as $msg) {
-            if (isset($msg['role']) && isset($msg['content'])) {
-                $role = $msg['role'];
-                $content = $msg['content'];
-                $userPrompt .= "- " . ucfirst($role) . ": " . $content . "\n";
-            } else {
-                if (!empty($msg['prompt'])) {
-                    $userPrompt .= "- User: " . trim($msg['prompt']) . "\n";
-                }
-                if (!empty($msg['response'])) {
-                    $userPrompt .= "- Assistant: " . trim($msg['response']) . "\n";
-                }
-            }
-        }
-        $userPrompt .= "\n";
-    }
-
-    $userPrompt .= "Instructions:\n" .
-                   "- Use only verified news sources and the provided news context when available.\n" .
-                   "- Answer the exact question in the Answer field.\n" .
-                   "- The search result titles below represent summaries from major news and financial institutions.\n" .
-                   "- For economic/financial questions: synthesize the titles and sources (e.g., The Economist, Goldman Sachs, Federal Reserve, White House, etc.) to construct an answer.\n" .
-                   "- Do NOT refuse to answer if sources are provided, even if they don't give a single clear verdict. Synthesize what they collectively indicate.\n" .
-                   "- If the search results show economic stability/growth from major sources, state that. If they show mixed views, note the different perspectives.\n" .
-                   "- Include clear, news-backed claims in Claims Found.\n";
-
-    if (!defined('OPENAI_API_KEY') || OPENAI_API_KEY === 'YOUR_OPENAI_API_KEY') {
+    // Check if OPENAI_API_KEY is properly configured
+    if (empty(OPENAI_API_KEY) || OPENAI_API_KEY === 'YOUR_OPENAI_API_KEY') {
+        error_log("OPENAI_API_KEY not configured. Using fallback response.");
         return generateSafeFallbackResponse($originalPrompt, $newsContext);
-    }
-
-    $searchResult = $webSearchContext;
-    if (!$hasSource && empty($searchResult)) {
-        $searchResult = performWebSearchTool($originalPrompt);
-    }
-    if (!empty($searchResult) && stripos($searchResult, 'No relevant verified news sources were found for the query:') === false) {
-        $userPrompt .= "NewsAPI search results:\n" . $searchResult . "\n";
-    } else {
-        $userPrompt .= "A search for related verified news sources was attempted but no directly relevant sources were found. Use the best available verified news context if possible.\n";
     }
 
     $response = callOpenAIContent($systemPrompt, $userPrompt);

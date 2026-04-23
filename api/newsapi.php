@@ -4,8 +4,20 @@ require_once __DIR__ . '/../config/config.php';
 // Simple in-memory cache to avoid hitting API limits
 $newsCache = [];
 
+// Check if NEWS_API_KEY is configured
+function isNewsApiConfigured() {
+    return !empty(NEWS_API_KEY) && NEWS_API_KEY !== 'your_newsapi_key_here';
+}
+
 function fetchNews($category = null, $country = 'us') {
     global $newsCache;
+    
+    // Ensure API key is configured
+    if (empty(NEWS_API_KEY)) {
+        error_log("NEWS_API_KEY is not configured. Cannot fetch news data.");
+        return ['status' => 'error', 'message' => 'NEWS_API_KEY not configured'];
+    }
+    
     $cacheKey = 'top_headlines_' . ($category ?: 'general') . '_' . $country;
 
     // Check cache (5 minute expiry)
@@ -18,24 +30,49 @@ function fetchNews($category = null, $country = 'us') {
         $url .= '&category=' . urlencode($category);
     }
 
-    $context = stream_context_create([
-        'http' => [
-            'timeout' => 10,
-            'user_agent' => 'NewsAI/1.0',
-            'ignore_errors' => true
-        ],
-        'ssl' => [
-            'verify_peer' => false,
-            'verify_peer_name' => false
-        ]
-    ]);
-
-    $data = @file_get_contents($url, false, $context);
+    $data = null;
+    
+    // Try using cURL first if available
+    if (function_exists('curl_init')) {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_USERAGENT, 'NewsAI/1.0');
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        
+        $data = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($curlError) {
+            error_log("NewsAPI fetchNews cURL error: $curlError");
+        } else {
+            error_log("NewsAPI fetchNews cURL request returned HTTP $httpCode");
+        }
+    } else {
+        // Fallback to file_get_contents
+        $context = stream_context_create([
+            'http' => [
+                'timeout' => 10,
+                'user_agent' => 'NewsAI/1.0',
+                'ignore_errors' => true
+            ],
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false
+            ]
+        ]);
+        $data = @file_get_contents($url, false, $context);
+    }
+    
     $result = $data ? json_decode($data, true) : null;
 
     // Check for API errors
     if (!$result) {
-        error_log("NewsAPI fetchNews failed: No response from API");
+        error_log("NewsAPI fetchNews failed: No valid JSON response");
         return ['status' => 'error', 'message' => 'No response from NewsAPI'];
     }
 
@@ -46,8 +83,27 @@ function fetchNews($category = null, $country = 'us') {
 
     if (!$result || !isset($result['status']) || $result['status'] !== 'ok') {
         // Fallback to everything endpoint
-        $url = 'https://newsapi.org/v2/everything?q=news&language=en&pageSize=20&sortBy=publishedAt&apiKey=' . NEWS_API_KEY;
-        $data = @file_get_contents($url, false, $context);
+        $fallbackUrl = 'https://newsapi.org/v2/everything?q=news&language=en&pageSize=20&sortBy=publishedAt&apiKey=' . NEWS_API_KEY;
+        
+        if (function_exists('curl_init')) {
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $fallbackUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+            curl_setopt($ch, CURLOPT_USERAGENT, 'NewsAI/1.0');
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+            
+            $data = curl_exec($ch);
+            curl_close($ch);
+        } else {
+            $context = stream_context_create([
+                'http' => ['timeout' => 10, 'user_agent' => 'NewsAI/1.0', 'ignore_errors' => true],
+                'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+            ]);
+            $data = @file_get_contents($fallbackUrl, false, $context);
+        }
+        
         $result = $data ? json_decode($data, true) : null;
 
         if (!$result || !isset($result['status']) || $result['status'] !== 'ok') {
@@ -69,6 +125,13 @@ function fetchNews($category = null, $country = 'us') {
 
 function searchNews($query, $daysBack = 7) {
     global $newsCache;
+    
+    // Ensure API key is configured
+    if (empty(NEWS_API_KEY)) {
+        error_log("NEWS_API_KEY is not configured. Cannot fetch news data.");
+        return ['status' => 'error', 'message' => 'NEWS_API_KEY not configured'];
+    }
+    
     $query = trim($query);
     if (!$query) {
         return null;
@@ -95,25 +158,52 @@ function searchNews($query, $daysBack = 7) {
         'apiKey' => NEWS_API_KEY
     ]);
 
-    $context = stream_context_create([
-        'http' => [
-            'timeout' => 15,
-            'user_agent' => 'NewsAI/1.0',
-            'ignore_errors' => true
-        ],
-        'ssl' => [
-            'verify_peer' => false,
-            'verify_peer_name' => false
-        ]
-    ]);
-
-    $data = @file_get_contents($url, false, $context);
+    $data = null;
+    
+    // Try using cURL first if available
+    if (function_exists('curl_init')) {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_USERAGENT, 'NewsAI/1.0');
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        
+        $data = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($curlError) {
+            error_log("NewsAPI cURL error for query '$query': $curlError");
+        } else {
+            error_log("NewsAPI cURL request for query '$query' returned HTTP $httpCode");
+        }
+    } else {
+        // Fallback to file_get_contents
+        $context = stream_context_create([
+            'http' => [
+                'timeout' => 15,
+                'user_agent' => 'NewsAI/1.0',
+                'ignore_errors' => true
+            ],
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false
+            ]
+        ]);
+        
+        $data = @file_get_contents($url, false, $context);
+        error_log("NewsAPI file_get_contents attempt for query '$query'");
+    }
+    
     $result = $data ? json_decode($data, true) : null;
 
     // Check for API errors
     if (!$result) {
-        error_log("NewsAPI searchNews failed: No response from API for query: $query");
-        return ['status' => 'error', 'message' => 'No response from NewsAPI search'];
+        error_log("NewsAPI searchNews failed: No valid JSON response for query: $query. Raw data length: " . strlen($data ?? ''));
+        return ['status' => 'error', 'message' => 'No valid response from NewsAPI'];
     }
 
     if (isset($result['status']) && $result['status'] === 'error') {
