@@ -72,7 +72,6 @@ try {
             exit();
         }
 
-        // Auto mode: try to determine what we're deleting
         // First, check if this is a prompt ID
         $sql = 'SELECT id, user_id, conversation_id FROM prompts WHERE id = :id LIMIT 1';
         $stmt = $conn->prepare($sql);
